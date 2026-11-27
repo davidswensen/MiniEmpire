@@ -27,6 +27,8 @@ export function hashState(s: GameState): number {
   h.int(s.nextId);
   h.bool(s.over);
   h.int(s.winnerTeam);
+  h.int(s.winners);
+  h.bool(s.diplomacy);
   for (const p of s.players) {
     h.int(p.slot);
     h.int(p.wood);
@@ -36,6 +38,10 @@ export function hashState(s: GameState): number {
     h.int(p.level);
     h.bool(p.alive);
     h.int(p.castleId);
+    h.int(p.tech.length);
+    for (const t of p.tech) h.int(t);
+    h.int(p.allies);
+    h.int(p.offers);
     if (p.bot) {
       h.int(p.bot.nextThink);
       h.int(p.bot.waveSize);

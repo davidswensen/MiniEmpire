@@ -3,7 +3,7 @@
 
 import * as THREE from 'three';
 import {
-  BUILDINGS, FP, RESOURCES, Tile, UNITS, type Entity, type GameEvent, type GameMap, type GameState,
+  BUILDINGS, FP, RESOURCES, Tile, UNITS, areFriends, type Entity, type GameEvent, type GameMap, type GameState,
 } from '@mini/shared';
 import { HAT_MODELS, MODELS, type Model, type Part } from './models.ts';
 
@@ -53,6 +53,7 @@ interface Projectile {
   dur: number;
   arc: number;
   splash: boolean;
+  style: ShotStyle;
 }
 
 interface Particle {
@@ -76,10 +77,22 @@ const tmpC = new THREE.Color();
 const UP = new THREE.Vector3(0, 1, 0);
 const SCAFFOLD = new THREE.Color(0xc8a26a);
 const AX = new THREE.Vector3(1, 0, 0);
+const AZ = new THREE.Vector3(0, 0, 1);
+
+/** Flyers cruise this high above the ground. */
+export const FLY_HEIGHT = 2.4;
+
+type ShotStyle = 'arrow' | 'bolt' | 'rock' | 'boulder' | 'cannon' | 'fire';
+const SHOT: Record<string, ShotStyle> = {
+  catapult: 'rock', trebuchet: 'boulder', ballista: 'bolt', skytower: 'bolt',
+  bombard: 'cannon', galleon: 'cannon', cannontower: 'cannon',
+  dragon: 'fire', wyvern: 'fire', fireship: 'fire', flametower: 'fire',
+};
 
 const BUILDING_HEIGHT: Record<string, number> = {
   castle: 2.6, tower: 2.4, barracks: 1.4, stable: 1.3, workshop: 1.6, house: 1.3, storehouse: 1.0,
   dock: 1.0, wall: 1.1, gate: 1.4, tree: 1.5, goldmine: 1.1,
+  blacksmith: 1.3, roost: 1.9, skytower: 2.8, flametower: 2.7, cannontower: 2.5,
 };
 
 export function teamColor(hex: number, variant: 'team' | 'teamDark' | 'teamLight'): THREE.Color {
@@ -438,24 +451,35 @@ export class Renderer {
           st.faceZ = ev.ty / FP;
         }
         if (!seen(ev.x, ev.y) && !seen(ev.tx, ev.ty)) continue;
+        const fromAir = !!UNITS[ev.kind]?.air;
+        const target = s.byId.get(ev.to);
+        const toAir = !!(target && UNITS[target.kind]?.air);
         if (ev.ranged) {
-          const rock = ev.kind === 'catapult';
-          const from = new THREE.Vector3(ev.x / FP, rock ? 0.9 : ev.kind in BUILDINGS ? 1.8 : 0.6, ev.y / FP);
-          const to = new THREE.Vector3(ev.tx / FP, 0.4, ev.ty / FP);
+          const style: ShotStyle = SHOT[ev.kind] ?? 'arrow';
+          const lob = style === 'rock' || style === 'boulder';
+          const startY = fromAir ? FLY_HEIGHT + 0.5 : ev.kind in BUILDINGS ? (BUILDING_HEIGHT[ev.kind] ?? 1.8) : lob ? 0.9 : 0.6;
+          const from = new THREE.Vector3(ev.x / FP, startY, ev.y / FP);
+          const to = new THREE.Vector3(ev.tx / FP, toAir ? FLY_HEIGHT + 0.4 : 0.4, ev.ty / FP);
           const dist = from.distanceTo(to);
           const mesh = this.projPool.pop() ?? new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshLambertMaterial({ color: 0xffffff }));
-          if (rock) {
-            mesh.scale.set(0.2, 0.2, 0.2);
-            (mesh.material as THREE.MeshLambertMaterial).color.set(0x57534e);
-          } else {
-            mesh.scale.set(0.04, 0.04, 0.38);
-            (mesh.material as THREE.MeshLambertMaterial).color.set(ev.kind === 'warship' ? 0x3f2a14 : 0xf5f5f4);
+          const mat = mesh.material as THREE.MeshLambertMaterial;
+          mat.emissive.set(0x000000);
+          let speed = 14;
+          let arc = dist * 0.08;
+          switch (style) {
+            case 'rock': mesh.scale.set(0.2, 0.2, 0.2); mat.color.set(0x57534e); speed = 7; arc = dist * 0.35; break;
+            case 'boulder': mesh.scale.set(0.34, 0.34, 0.34); mat.color.set(0x44403c); speed = 7; arc = dist * 0.4; break;
+            case 'bolt': mesh.scale.set(0.07, 0.07, 0.7); mat.color.set(0x3f2a14); speed = 20; arc = dist * 0.03; break;
+            case 'cannon': mesh.scale.set(0.17, 0.17, 0.17); mat.color.set(0x111827); speed = 13; arc = dist * 0.12; break;
+            case 'fire': mesh.scale.set(0.24, 0.24, 0.24); mat.color.set(0xf97316); mat.emissive.set(0xc2410c); speed = 11; arc = dist * 0.04; break;
+            default: mesh.scale.set(0.04, 0.04, 0.38); mat.color.set(ev.kind === 'warship' || ev.kind === 'longship' ? 0x3f2a14 : 0xf5f5f4);
           }
           mesh.position.copy(from);
           this.scene.add(mesh);
-          this.projectiles.push({ mesh, from, to, t0: this.time, dur: Math.max(0.15, dist / (rock ? 7 : 14)), arc: rock ? dist * 0.35 : dist * 0.08, splash: rock });
+          if (style === 'cannon') this.burst(from.x, from.y, from.z, 6, 0xd6d3d1, 0.8, 0.18, 0.7, -0.5);
+          this.projectiles.push({ mesh, from, to, t0: this.time, dur: Math.max(0.12, dist / speed), arc, splash: lob || style === 'cannon' || style === 'fire', style });
         } else {
-          this.burst(ev.tx / FP, 0.5, ev.ty / FP, 3, 0xfff7c2, 1.5, 0.06, 0.3, 4);
+          this.burst(ev.tx / FP, toAir ? FLY_HEIGHT + 0.5 : 0.5, ev.ty / FP, 3, 0xfff7c2, 1.5, 0.06, 0.3, 4);
         }
       } else if (ev.e === 'death') {
         if (!seen(ev.x, ev.y)) continue;
@@ -467,6 +491,9 @@ export class Renderer {
           this.burst(x, 0.5, z, 14, 0xd6d3d1, 0.7, 0.4, 2.2, -0.8);
         } else if (ev.kind in RESOURCES) {
           this.burst(x, 0.8, z, 8, 0x22a447, 1.5, 0.12, 0.8);
+        } else if (UNITS[ev.kind]?.air && ev.owner >= 0) {
+          this.burst(x, FLY_HEIGHT, z, 24, this.teamColors[ev.owner]?.[0] ?? 0xffffff, 2.5, 0.16, 1.6);
+          this.burst(x, FLY_HEIGHT, z, 10, 0x9ca3af, 0.6, 0.35, 1.8, -0.4);
         } else if (ev.owner >= 0) {
           this.burst(x, 0.5, z, 10, this.teamColors[ev.owner]?.[0] ?? 0xffffff, 2.2, 0.1, 0.9);
         }
@@ -503,14 +530,14 @@ export class Renderer {
     this.anchors = [];
     let rings = 0;
     const alpha = vm.alpha;
-    const myTeam = vm.me >= 0 ? s.players[vm.me]?.team : -1;
+    const friendOf = (owner: number) => vm.me >= 0 && areFriends(s, owner, vm.me);
 
     for (const e of s.entities) {
       if (e.inside) continue;
       const ud = UNITS[e.kind];
       const tile = Math.floor(e.y / FP) * w + Math.floor(e.x / FP);
       const v = vm.fogEnabled ? vm.vis[tile] : 2;
-      const friendly = e.owner >= 0 && s.players[e.owner]?.team === myTeam;
+      const friendly = e.owner >= 0 && friendOf(e.owner);
       if (vm.fogEnabled && !friendly) {
         if (ud && v < 2) continue;
         if (!ud && v === 0) continue;
@@ -556,9 +583,10 @@ export class Renderer {
 
       let y = 0;
       if (ud?.naval) y = -0.08 + Math.sin(this.time * 2 + e.id) * 0.03;
-      if (ud && !ud.naval) y = Math.abs(Math.sin(st.phase)) * 0.04 * st.moving;
+      else if (ud?.air) y = FLY_HEIGHT + Math.sin(this.time * 2.2 + e.id) * 0.12;
+      else if (ud) y = Math.abs(Math.sin(st.phase)) * 0.04 * st.moving;
       let sy = 1;
-      let scale = 1;
+      let scale = km.model.scale ?? 1;
       const bd = BUILDINGS[e.kind];
       if (bd && !e.done) sy = 0.2 + 0.8 * (e.progress / bd.buildTime);
       if (e.kind === 'tree') scale = 0.85 + ((e.id * 7) % 5) * 0.06;
@@ -597,6 +625,9 @@ export class Renderer {
               break;
             case 'wheel': ang = st.wheel; break;
             case 'flag': ang = Math.sin(this.time * 3 + e.id) * 0.3; axis = UP; break;
+            case 'wingL': ang = 0.15 + Math.sin(this.time * (ud?.kind === 'dragon' ? 4 : 7) + e.id) * 0.55; axis = AZ; break;
+            case 'wingR': ang = -0.15 - Math.sin(this.time * (ud?.kind === 'dragon' ? 4 : 7) + e.id) * 0.55; axis = AZ; break;
+            case 'recoil': ang = attackP < 1 ? -0.3 * (1 - attackP) : 0; break;
             case 'throw': ang = attackP < 1 ? 1.3 * Math.sin(Math.min(1, attackP * 2.5) * Math.PI * 0.5) * (1 - attackP * 0.5) : 0; break;
           }
           if (ang !== 0) {
@@ -632,12 +663,19 @@ export class Renderer {
       }
 
       // overlay anchor and selection ring
-      const topY = ud ? (ud.naval ? 1.3 : e.kind === 'knight' ? 1.55 : ud.armor === 'siege' ? 0.95 : 1.05) : (BUILDING_HEIGHT[e.kind] ?? 1) * sy + 0.3;
+      const topY = ud
+        ? ud.air ? y + 1.1 * scale : ud.naval ? 1.3 : e.kind === 'knight' ? 1.55 : ud.armor === 'siege' ? 0.95 : 1.05
+        : (BUILDING_HEIGHT[e.kind] ?? 1) * sy + 0.3;
       const pr = this.project(x, topY, z);
       if (pr.on) {
         const ground = this.project(x, 0, z);
         const scale2 = Math.max(0.35, Math.min(2.2, 18 / this.dist));
-        this.anchors.push({ e, sx: ud ? ground.x * 0.5 + pr.x * 0.5 : pr.x, sy: ud ? (ground.y + pr.y) / 2 : pr.y, scale: scale2, topY: pr.y });
+        if (ud?.air) {
+          const body = this.project(x, y + 0.4 * scale, z);
+          this.anchors.push({ e, sx: body.x, sy: body.y, scale: scale2 * 1.4, topY: pr.y });
+        } else {
+          this.anchors.push({ e, sx: ud ? ground.x * 0.5 + pr.x * 0.5 : pr.x, sy: ud ? (ground.y + pr.y) / 2 : pr.y, scale: scale2, topY: pr.y });
+        }
       }
       if ((vm.selection.has(e.id) || vm.hover === e.id) && rings < 256) {
         const r = ud ? ud.radius / FP + 0.15 : e.size * 0.62 + 0.1;
@@ -732,7 +770,13 @@ export class Renderer {
         this.scene.remove(p.mesh);
         this.projPool.push(p.mesh);
         this.projectiles.splice(i, 1);
-        if (p.splash) this.burst(p.to.x, 0.3, p.to.z, 12, 0xa8a29e, 2.5, 0.12, 0.8);
+        if (p.style === 'fire') {
+          this.burst(p.to.x, p.to.y, p.to.z, 10, 0xf97316, 2, 0.14, 0.6, -1);
+          this.burst(p.to.x, p.to.y, p.to.z, 6, 0xfde047, 1.5, 0.1, 0.5, -1);
+        } else if (p.style === 'cannon') {
+          this.burst(p.to.x, 0.3, p.to.z, 14, 0x1f2937, 3, 0.14, 0.8);
+          this.burst(p.to.x, 0.4, p.to.z, 8, 0xfb923c, 2, 0.16, 0.4, -1);
+        } else if (p.splash) this.burst(p.to.x, 0.3, p.to.z, p.style === 'boulder' ? 20 : 12, 0xa8a29e, 2.5, 0.12, 0.8);
         continue;
       }
       const pos = new THREE.Vector3().lerpVectors(p.from, p.to, t);
@@ -741,7 +785,8 @@ export class Renderer {
       next.y += Math.sin(Math.min(1, t + 0.05) * Math.PI) * p.arc;
       p.mesh.position.copy(pos);
       p.mesh.lookAt(next);
-      if (p.splash) p.mesh.rotation.x += this.time * 5;
+      if (p.style === 'rock' || p.style === 'boulder') p.mesh.rotation.x += this.time * 5;
+      if (p.style === 'fire' && Math.random() < 0.6) this.burst(pos.x, pos.y, pos.z, 1, Math.random() < 0.5 ? 0xf97316 : 0xfde047, 0.3, 0.1, 0.35, -0.5);
     }
     // particles
     let k = 0;

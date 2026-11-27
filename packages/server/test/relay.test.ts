@@ -144,6 +144,28 @@ describe('relay server', () => {
     again.ws.close();
   });
 
+  it('sends turns on a steady 100 ms clock (no drift)', async () => {
+    const a = new Client();
+    await a.open();
+    a.send({ type: 'hello', name: 'Tim', hat: 0 });
+    await a.wait('welcome');
+    a.send({ type: 'create', mode: '1v1', isPublic: false });
+    await a.wait('room');
+    a.send({ type: 'setBot', slot: 1, botLevel: 1 });
+    await a.wait('room', (m) => m.room.slots[1].kind === 'bot');
+    const times: number[] = [];
+    a.ws.on('message', (d) => { if (String(d).includes('"type":"turn"')) times.push(Date.now()); });
+    a.send({ type: 'start' });
+    await new Promise((r) => setTimeout(r, 3000));
+    a.ws.close();
+    // 3 s should hold ~30 turns; a drifting setInterval delivers noticeably fewer
+    const span = times[times.length - 1] - times[0];
+    const avg = span / (times.length - 1);
+    expect(times.length).toBeGreaterThanOrEqual(28);
+    expect(avg).toBeGreaterThan(95);
+    expect(avg).toBeLessThan(104);
+  });
+
   it('serves a health check', async () => {
     const res = await fetch(`http://localhost:${PORT}/health`);
     expect((await res.json()).ok).toBe(true);

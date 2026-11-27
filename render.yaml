@@ -1,8 +1,0 @@
-# Render.com blueprint (alternative to Fly.io). Uses the Dockerfile.
-services:
-  - type: web
-    name: miniempire
-    runtime: docker
-    plan: starter
-    healthCheckPath: /health
-    numInstances: 1 # rooms live in memory: one instance so players meet each other

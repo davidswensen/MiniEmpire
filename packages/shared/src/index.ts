@@ -11,3 +11,4 @@ export * from './lockstep.ts';
 export * from './protocol.ts';
 export * from './headless.ts';
 export * from './golden.ts';
+export * from './stats.ts';

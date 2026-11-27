@@ -1,6 +1,6 @@
 import './styles.css';
 import {
-  BOT_LEVELS, MODE_NAMES, MODE_SLOTS, PLAYER_COLORS, PLAYER_COLOR_NAMES, EMOTES, QUICK_CHAT, cleanCode,
+  BOT_LEVELS, MODE_NAMES, TECHS, TECH_INDEX, MODE_SLOTS, PLAYER_COLORS, PLAYER_COLOR_NAMES, EMOTES, QUICK_CHAT, cleanCode,
   type GameMode, type GameSetup, type RoomInfo, type ServerMsg,
 } from '@mini/shared';
 import { sfx, unlockAudio } from './audio.ts';
@@ -147,6 +147,33 @@ function playEventSounds(g: GameSession, r: Renderer, events: import('@mini/shar
         running?.hud.flash(ev.owner === g.me ? '💥 Your castle fell!' : `💥 ${p.name} is out!`);
         break;
       }
+      case 'research':
+        if (ev.owner === g.me) {
+          const t = TECHS[TECH_INDEX[ev.tech]];
+          sfx('levelup', 0.7);
+          running?.hud.flash(`${t?.icon ?? '🔬'} ${t?.name ?? 'Research'}${(t?.levels ?? 1) > 1 ? ` ${ev.level}` : ''} done!`);
+        }
+        break;
+      case 'diplomacy': {
+        running?.hud.refreshDiplomacy();
+        if (ev.from !== g.me && ev.to !== g.me) {
+          if (ev.what === 'ally' || ev.what === 'break') {
+            running?.hud.flash(ev.what === 'ally' ? `🤝 ${s.players[ev.from].name} and ${s.players[ev.to].name} are now allies` : `💔 ${s.players[ev.from].name} broke the alliance with ${s.players[ev.to].name}`);
+          }
+          break;
+        }
+        const other = s.players[ev.from === g.me ? ev.to : ev.from].name;
+        const mine = ev.from === g.me;
+        const msg = {
+          offer: mine ? `🤝 You asked ${other} to be allies` : `🤝 ${other} wants to be your ally! Press 🤝 to answer.`,
+          ally: `🤝 You and ${other} are now allies!`,
+          break: mine ? `💔 You broke the alliance with ${other}` : `💔 ${other} broke your alliance! Watch out!`,
+          withdraw: mine ? `You cancelled your offer to ${other}` : `${other} changed their mind`,
+        }[ev.what];
+        sfx(ev.what === 'break' ? 'error' : 'chat');
+        running?.hud.flash(msg);
+        break;
+      }
     }
   }
 }
@@ -202,7 +229,7 @@ function showEnd(): void {
   let xp = 0;
   if (g.kind === 'replay') banner = '<p class="banner win">The End</p>';
   else {
-    const won = !!g.myPlayer && g.myPlayer.team === s.winnerTeam;
+    const won = g.me >= 0 && (s.winners & (1 << g.me)) !== 0;
     banner = won ? '<p class="banner win">Victory! 🏆</p>' : '<p class="banner lose">Defeat 🛡️</p>';
     xp = won ? 100 : 40;
     const prof = loadProfile();

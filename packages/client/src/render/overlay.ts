@@ -62,7 +62,8 @@ export class Overlay {
       if (e.kind === 'castle' && e.owner >= 0) {
         const p = s.players[e.owner];
         const color = '#' + p.color.toString(16).padStart(6, '0');
-        this.label(p.name, a.sx, y - 16 * scale, color, 15 * Math.max(0.8, Math.min(1.3, scale)), true);
+        const allied = g.me >= 0 && e.owner !== g.me && (s.players[g.me].allies & (1 << e.owner)) !== 0;
+        this.label(allied ? `🤝 ${p.name}` : p.name, a.sx, y - 16 * scale, color, 15 * Math.max(0.8, Math.min(1.3, scale)), true);
         const b = this.bubbles.get(e.owner);
         if (b && b.until > now) this.speech(b.text, a.sx, y - 44 * scale);
       }

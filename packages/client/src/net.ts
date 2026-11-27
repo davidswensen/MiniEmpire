@@ -187,7 +187,7 @@ export class LocalTransport implements GameTransport {
     this.events.onTurn?.(t);
   }
   sendCmd(c: Command): void {
-    if (!this.paused) this.pending.push(c);
+    this.pending.push(c); // held while paused, sent on resume
   }
   sendHash(): void {}
   sendChat(i: number, emote: boolean): void {

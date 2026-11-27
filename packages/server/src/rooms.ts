@@ -43,6 +43,7 @@ export class Room {
   turns: TurnMsg[] = [];
   pending: PlayerCommand[] = [];
   timer: NodeJS.Timeout | null = null;
+  startAt = 0;
   hashes = new Map<number, Map<number, number>>();
   desynced = false;
   emptySince = 0;
@@ -118,8 +119,28 @@ export class Room {
       })),
     };
     this.members.forEach((m, i) => m?.send({ type: 'start', setup: this.setup as GameSetup, you: i, code: this.code }));
-    this.timer = setInterval(() => this.turn(), TURN_MS);
+    this.startAt = Date.now();
+    this.schedule();
     return null;
+  }
+
+  /**
+   * Drift-free turn clock: turn n is due at startAt + (n + 1) * TURN_MS.
+   * (setInterval drifts late, which made clients run dry and stall every few turns.)
+   */
+  private schedule(): void {
+    const due = this.startAt + (this.turns.length + 1) * TURN_MS;
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      // if the process was busy, catch up (but never send a huge burst)
+      let n = 0;
+      while (n < 5 && Date.now() >= this.startAt + (this.turns.length + 1) * TURN_MS) {
+        this.turn();
+        n++;
+      }
+      if (n === 0) this.turn();
+      if (!this.desynced) this.schedule();
+    }, Math.max(0, due - Date.now()));
   }
 
   private turn(): void {
@@ -130,7 +151,7 @@ export class Room {
   }
 
   stop(): void {
-    if (this.timer) clearInterval(this.timer);
+    if (this.timer) clearTimeout(this.timer);
     this.timer = null;
   }
 

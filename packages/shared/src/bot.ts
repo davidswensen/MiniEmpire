@@ -1,7 +1,7 @@
 // Bot players live inside the deterministic simulation: they read the state and
 // issue ordinary commands, using only the simulation's own seeded RNG.
 
-import { BUILDINGS, CASTLE_UPGRADES, MAX_POP, UNITS, UPGRADE_ITEM, type Cost } from './defs.ts';
+import { BUILDINGS, CASTLE_UPGRADES, MAX_POP, TECHS, TECH_INDEX, TECH_PREFIX, UNITS, UPGRADE_ITEM, techCost, type Cost } from './defs.ts';
 import { FP, idiv, ilen, toTile } from './fixed.ts';
 import { randInt } from './rng.ts';
 import { areEnemies, botCommand, canPlace, distToEdge, nearestResource } from './sim.ts';
@@ -19,6 +19,8 @@ interface BotParams {
   armyCap: number; // most soldiers this bot keeps at once
   trainEvery: number; // train at most once every N thinks (1 = every think)
   minWave: number; // later waves wait for at least this many idle soldiers
+  techs: string[]; // research wish list, in order
+  roost: boolean; // builds a dragon roost at castle level 3
 }
 
 const NEVER = 1 << 30;
@@ -29,10 +31,12 @@ export const BOT_LEVELS = ['Sleepy (tutorial)', 'Easy', 'Normal', 'Hard'];
 const PARAMS: BotParams[] = [
   // Sleepy: tutorial punching bag. Easy: small, slow army, no knights. Normal: steady.
   // Hard: big economy, full tech, large waves.
-  { think: 40, maxWorkers: 6, firstAttack: NEVER, wave: 0, grow: 0, maxLevel: 1, towers: 0, army: false, armyCap: 0, trainEvery: 1, minWave: 0 },
-  { think: 40, maxWorkers: 8, firstAttack: 9 * MIN, wave: 5, grow: 1, maxLevel: 1, towers: 0, army: true, armyCap: 8, trainEvery: 3, minWave: 4 },
-  { think: 24, maxWorkers: 14, firstAttack: 6 * MIN, wave: 8, grow: 2, maxLevel: 2, towers: 1, army: true, armyCap: 22, trainEvery: 1, minWave: 8 },
-  { think: 12, maxWorkers: 20, firstAttack: 5 * MIN, wave: 12, grow: 3, maxLevel: 3, towers: 1, army: true, armyCap: 60, trainEvery: 1, minWave: 16 },
+  { think: 40, maxWorkers: 6, firstAttack: NEVER, wave: 0, grow: 0, maxLevel: 1, towers: 0, army: false, armyCap: 0, trainEvery: 1, minWave: 0, techs: [], roost: false },
+  { think: 40, maxWorkers: 8, firstAttack: 9 * MIN, wave: 5, grow: 1, maxLevel: 1, towers: 0, army: true, armyCap: 8, trainEvery: 3, minWave: 4, techs: [], roost: false },
+  { think: 24, maxWorkers: 14, firstAttack: 6 * MIN, wave: 8, grow: 2, maxLevel: 2, towers: 1, army: true, armyCap: 22, trainEvery: 1, minWave: 8,
+    techs: ['tools', 'weapons', 'armor'], roost: false },
+  { think: 12, maxWorkers: 20, firstAttack: 5 * MIN, wave: 12, grow: 3, maxLevel: 3, towers: 1, army: true, armyCap: 60, trainEvery: 1, minWave: 16,
+    techs: ['tools', 'baskets', 'weapons', 'archery', 'armor', 'tools', 'weapons', 'barding', 'towerguards', 'siegecraft', 'dragonfire', 'armor', 'masonry'], roost: true },
 ];
 
 function afford(p: Player, c: Cost, reserveW = 0, reserveG = 0): boolean {
@@ -83,6 +87,14 @@ export function botThink(s: GameState, p: Player): void {
   mem.nextThink = s.tick + prm.think;
   const castle = s.byId.get(p.castleId);
   if (!castle) return;
+  // diplomacy: accept alliance offers, unless that would end the game right away
+  if (s.diplomacy) {
+    for (const q of s.players) {
+      if (!q.alive || q.slot === p.slot || !(q.offers & (1 << p.slot))) continue;
+      const otherEnemies = s.players.some((o) => o.alive && o.slot !== q.slot && o.slot !== p.slot && (areEnemies(s, p.slot, o.slot) || areEnemies(s, q.slot, o.slot)));
+      if (otherEnemies) botCommand(s, p.slot, { t: 'ally', target: q.slot });
+    }
+  }
   const ctx = toTile(castle.x);
   const cty = toTile(castle.y);
 
@@ -175,10 +187,31 @@ export function botThink(s: GameState, p: Player): void {
   const saveW = wantUpgrade && up ? up.cost.wood : 0;
   const saveG = wantUpgrade && up ? up.cost.gold : 0;
   // 6. advanced buildings
+  if (prm.techs.length > 0 && has('barracks') && !has('blacksmith') && workers.length >= 10) tryBuild('blacksmith', home, 5);
   if (prm.army && p.level >= 2) {
     if (!has('stable')) tryBuild('stable', home, 5);
     else if (prm.maxLevel >= 3 && !has('workshop')) tryBuild('workshop', home, 6);
     else if ((blds.tower?.length ?? 0) < prm.towers) tryBuild('tower', home, 3);
+    else if (prm.roost && p.level >= 3 && !has('roost')) tryBuild('roost', home, 6);
+  }
+  // enemy flyers spotted: put up anti-air towers
+  if (prm.army && p.level >= 2 && (blds.skytower?.length ?? 0) < 2) {
+    const flyers = s.entities.some((e) => !e.dead && UNITS[e.kind]?.air && areEnemies(s, p.slot, e.owner));
+    if (flyers) tryBuild('skytower', home, 3);
+  }
+  // research the next wished-for upgrade (one at a time)
+  const researching = s.entities.some((e) => e.owner === p.slot && e.queue.some((q) => q.startsWith(TECH_PREFIX)));
+  if (!researching && army.length >= 4) {
+    for (const id of prm.techs) {
+      const ti = TECH_INDEX[id];
+      const tech = TECHS[ti];
+      const lvl = p.tech[ti];
+      if (lvl >= tech.levels || p.level < tech.castleLevel) continue;
+      const at = (blds[tech.at] ?? []).find((b) => b.done && b.queue.length < 2);
+      if (!at) continue;
+      if (afford(p, techCost(tech, lvl + 1), 60, 40)) botCommand(s, p.slot, { t: 'research', b: at.id, tech: id });
+      break;
+    }
   }
 
   if (!prm.army) return;
@@ -187,7 +220,7 @@ export function botThink(s: GameState, p: Player): void {
   const reserveW = p.popCap - p.pop <= 2 ? 40 : 0;
   let armyRoom = prm.armyCap - army.length;
   const trainTurn = idiv(s.tick, prm.think) % prm.trainEvery === 0;
-  for (const kind of ['barracks', 'stable', 'workshop']) {
+  for (const kind of ['barracks', 'stable', 'workshop', 'roost']) {
     for (const b of blds[kind] ?? []) {
       if (!b.done || b.queue.length >= 2 || armyRoom <= b.queue.length || !trainTurn) continue;
       // at most two siege engines of each kind: they cannot fight soldiers

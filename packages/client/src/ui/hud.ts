@@ -1,7 +1,8 @@
 // In-game HUD (plain DOM): resources, selection panel, actions, minimap, chat, menus.
 
 import {
-  BUILD_MENU, BUILDINGS, CASTLE_UPGRADES, EMOTES, FP, MAX_POP, QUICK_CHAT, RESOURCES, Tile, UNITS, UPGRADE_ITEM,
+  BUILD_MENU, BUILDINGS, CASTLE_UPGRADES, EMOTES, FP, MAX_POP, QUICK_CHAT, RESOURCES, TECHS, TECH_INDEX, TECH_PREFIX,
+  Tile, UNITS, UPGRADE_ITEM, areFriends, researchesAt, techCost,
   type Cost,
 } from '@mini/shared';
 import { sfx } from '../audio.ts';
@@ -12,6 +13,18 @@ import type { Overlay } from '../render/overlay.ts';
 import type { Renderer } from '../render/scene.ts';
 
 const HOTKEYS = 'qertfgzxcvbnm';
+
+function queueIcon(q: string): string {
+  if (q === UPGRADE_ITEM) return '⭐';
+  if (q.startsWith(TECH_PREFIX)) return TECHS[TECH_INDEX[q.slice(TECH_PREFIX.length)]]?.icon ?? '🔬';
+  return UNITS[q]?.icon ?? '?';
+}
+
+function queueName(q: string): string {
+  if (q === UPGRADE_ITEM) return 'Castle upgrade';
+  if (q.startsWith(TECH_PREFIX)) return TECHS[TECH_INDEX[q.slice(TECH_PREFIX.length)]]?.name ?? 'Research';
+  return UNITS[q]?.name ?? q;
+}
 
 function costHtml(c: Cost): string {
   const parts: string[] = [];
@@ -79,6 +92,7 @@ export class Hud {
         <button class="icon-btn" data-act="menu" title="Menu">☰</button>
         ${replay ? '' : '<button class="icon-btn" data-act="chat" title="Quick chat">💬</button>'}
         <button class="icon-btn" data-act="help" title="How to play">❓</button>
+        ${!replay && this.g.state.diplomacy && this.g.me >= 0 ? '<button class="icon-btn" data-act="diplo" title="Alliances">🤝</button>' : ''}
       </div>
       <div class="topbar"></div>
       <div class="top-right">
@@ -132,6 +146,13 @@ export class Hud {
       case 'menu': this.togglePopup('menu'); break;
       case 'chat': this.togglePopup('chat'); break;
       case 'help': this.togglePopup('help'); break;
+      case 'diplo': this.togglePopup('diplo'); break;
+      case 'ally':
+        g.command({ t: 'ally', target: Number(el.dataset.p) });
+        break;
+      case 'unally':
+        g.command({ t: 'unally', target: Number(el.dataset.p) });
+        break;
       case 'close': this.closePopup(); break;
       case 'idle': this.input.selectIdleWorker(); break;
       case 'army': this.input.selectArmy(); break;
@@ -254,19 +275,61 @@ export class Hud {
       html = `<h2>Quick chat</h2>
         <div class="emote-row">${EMOTES.map((e, i) => `<button data-act="quick" data-i="${i}" data-emote="1">${e}</button>`).join('')}</div>
         ${QUICK_CHAT.map((t, i) => `<button class="btn small ghost" data-act="quick" data-i="${i}">${esc(t)}</button>`).join('')}`;
+    } else if (kind === 'diplo') {
+      html = this.diploHtml();
     } else if (kind === 'help') {
       html = `<h2>How to play</h2>
         <p><b>Goal:</b> destroy the enemy castle 🏰 and protect yours!</p>
         <p>🧑‍🌾 <b>Workers</b> chop 🪵 wood and mine 🪙 gold. Click a worker, then click a tree or gold rock.</p>
         <p>🏠 Build <b>houses</b> to grow your army. Upgrade your castle to unlock knights, rams and catapults.</p>
         <h3>Who beats who</h3>
-        <p>🗡️ Swordsman beats 🐴 Knight<br>🐴 Knight beats 🏹 Archer<br>🏹 Archer beats 🗡️ Swordsman<br>🪵 Rams and ☄️ Catapults smash buildings</p>
+        <p>🗡️ Swordsman beats 🐴 Knight<br>🐴 Knight beats 🏹 Archer<br>🏹 Archer beats 🗡️ Swordsman<br>🪵 Rams, ☄️ catapults, 🏗️ trebuchets and 💣 cannons smash buildings</p>
+        <h3>Flyers</h3>
+        <p>🦅 Griffins, 🦎 wyverns and 🐉 dragons fly over water and walls. Only archers, towers, ships, other flyers and especially 🎯 ballistas can hit them.</p>
+        <h3>Upgrades</h3>
+        <p>Click your 🏰 castle, ⚒️ blacksmith, 🔨 workshop, ⚓ dock or 🪺 roost to research stronger soldiers, workers, ships and dragons.</p>
+        <h3>Alliances</h3>
+        <p>In free-for-all games press 🤝 to ask another player to be allies. Allies share vision and win together. You can break an alliance any time.</p>
         <h3>Controls</h3>
         <p class="small-text">Click to select · drag a box for many · click ground, trees or enemies to give orders · right-click works too · WASD / arrows / drag to move the map · wheel or pinch to zoom · H = castle · . = idle worker · Tab = army · Ctrl+1-9 save group, 1-9 pick group · Esc = cancel</p>
         <button class="btn ghost" data-act="close">Got it!</button>`;
     }
     this.popup.innerHTML = html;
     this.popup.classList.remove('hidden');
+  }
+
+  /** Rebuild the alliances popup if it is open (called after diplomacy events). */
+  refreshDiplomacy(): void {
+    if (this.popupKind === 'diplo') this.popup.innerHTML = this.diploHtml();
+  }
+
+  private diploHtml(): string {
+    const g = this.g;
+    const s = g.state;
+    const me = s.players[g.me];
+    const rows = s.players.filter((p) => p.slot !== g.me).map((p) => {
+      const name = `<span style="color:${hex(p.color)};font-weight:800">■ ${esc(p.name)}</span>`;
+      const bit = 1 << p.slot;
+      let status: string;
+      let btn = '';
+      if (!p.alive) status = '💀 Out';
+      else if (me.allies & bit) {
+        status = '<span class="tag good">🤝 Ally</span>';
+        btn = `<button class="btn small red" data-act="unally" data-p="${p.slot}">💔 Break</button>`;
+      } else if (p.offers & (1 << g.me)) {
+        status = '<span class="tag">Wants to be your ally!</span>';
+        btn = `<button class="btn small green" data-act="ally" data-p="${p.slot}">🤝 Accept</button>`;
+      } else if (me.offers & bit) {
+        status = '<span class="tag">Asked… waiting</span>';
+        btn = `<button class="btn small ghost" data-act="unally" data-p="${p.slot}">Cancel</button>`;
+      } else {
+        status = '<span class="tag">⚔️ Enemy</span>';
+        btn = `<button class="btn small blue" data-act="ally" data-p="${p.slot}">🤝 Ask</button>`;
+      }
+      return `<div class="slot"><span class="grow">${name}<br>${status}</span>${me.alive ? btn : ''}</div>`;
+    }).join('');
+    return `<h2>🤝 Alliances</h2><p class="small-text muted">Allies share vision, never fight, and win together. Anyone can break an alliance at any time.</p>${rows}
+      <button class="btn ghost" data-act="close">Close</button>`;
   }
 
   private closePopup(): void {
@@ -331,7 +394,8 @@ export class Hud {
     const p = g.myPlayer;
     const sel = g.selected();
     const parts: (string | number)[] = [sel.map((e) => e.id).join(','), g.placing ? `${g.placing.kind}:${g.placing.ok}` : '', g.rallyMode ? 'r' : '', this.input?.touchUI ? 't' : ''];
-    if (p) parts.push(p.level, p.pop >= p.popCap ? 'full' : '');
+    if (p) parts.push(p.level, p.pop >= p.popCap ? 'full' : '', p.tech.join(''));
+    if (p) for (const e of sel.slice(0, 1)) if (e.kind in BUILDINGS) parts.push(g.state.entities.filter((x) => x.owner === g.me).flatMap((x) => x.queue).filter((q) => q.startsWith(TECH_PREFIX)).join(','));
     for (const e of sel.slice(0, 1)) parts.push(e.done ? 1 : 0, e.queue.join('+'), e.cargo.length, e.kind);
     if (sel.length > 1) parts.push(sel.map((e) => e.kind).sort().join(','));
     // affordability of every action that might be shown
@@ -357,7 +421,9 @@ export class Hud {
       const e = s.byId.get(Number(el.dataset.qp));
       if (!e || e.queue.length === 0) return;
       const item = e.queue[0];
-      const total = item === UPGRADE_ITEM ? CASTLE_UPGRADES[s.players[e.owner].level]?.time ?? 1 : UNITS[item]?.trainTime ?? 1;
+      const total = item === UPGRADE_ITEM
+        ? CASTLE_UPGRADES[s.players[e.owner].level]?.time ?? 1
+        : item.startsWith(TECH_PREFIX) ? TECHS[TECH_INDEX[item.slice(TECH_PREFIX.length)]]?.time ?? 1 : UNITS[item]?.trainTime ?? 1;
       el.style.width = `${Math.min(100, (e.queueTime / total) * 100)}%`;
     });
     this.panel.querySelectorAll<HTMLElement>('[data-bp]').forEach((el) => {
@@ -483,6 +549,21 @@ export class Hud {
             sfx('train');
           }, false, u.desc);
         }
+        const researching = s.entities.filter((x) => x.owner === g.me).flatMap((x) => x.queue);
+        for (const t of researchesAt(first.kind)) {
+          const ti = TECH_INDEX[t.id];
+          const lvl = p.tech[ti];
+          if (lvl >= t.levels) continue;
+          const locked = p.level < t.castleLevel;
+          const busy = researching.includes(TECH_PREFIX + t.id);
+          const cost = techCost(t, lvl + 1);
+          const label = t.levels > 1 ? `${t.name} ${lvl + 1}` : t.name;
+          acts += this.act(`r-${t.id}`, locked ? '🔒' : t.icon, label, locked ? `Castle Lv${t.castleLevel}` : busy ? 'researching…' : costHtml(cost),
+            !locked && !busy && afford(cost) && first.queue.length < 5, () => {
+              g.command({ t: 'research', b: first.id, tech: t.id });
+              sfx('train');
+            }, false, `${t.desc} (level ${lvl + 1} of ${t.levels})`);
+        }
         if (first.kind === 'castle') {
           const up = CASTLE_UPGRADES[p.level];
           if (up && !first.queue.includes(UPGRADE_ITEM)) {
@@ -498,7 +579,7 @@ export class Hud {
           }, g.rallyMode);
         }
         if (first.queue.length > 0) {
-          html += `<div class="queue">${first.queue.map((q, i) => `<div class="qitem" title="${q === UPGRADE_ITEM ? 'Castle upgrade' : esc(UNITS[q]?.name ?? q)}">${q === UPGRADE_ITEM ? '⭐' : UNITS[q]?.icon ?? '?'}${i === 0 ? `<div class="fill" data-qp="${first.id}"></div>` : ''}</div>`).join('')}
+          html += `<div class="queue">${first.queue.map((q, i) => `<div class="qitem" title="${esc(queueName(q))}">${queueIcon(q)}${i === 0 ? `<div class="fill" data-qp="${first.id}"></div>` : ''}</div>`).join('')}
             <button class="btn small ghost" data-act="dyn:cancel">✖ Cancel last</button></div>`;
           this.actions.set('dyn:cancel', () => g.command({ t: 'cancel', b: first.id }));
           if (p.pop >= p.popCap && first.queue[0] !== UPGRADE_ITEM) html += `<div class="hint">🏠 Not enough room! Build a house so new units can join.</div>`;
@@ -555,10 +636,10 @@ export class Hud {
     }
     const img = ctx.createImageData(w, h);
     img.data.set(this.miniBase.data);
-    const team = g.myPlayer?.team;
+    const me = g.me;
     for (const e of s.entities) {
       if (e.inside) continue;
-      const friendly = e.owner >= 0 && s.players[e.owner].team === team;
+      const friendly = e.owner >= 0 && me >= 0 && areFriends(s, e.owner, me);
       if (!friendly && !g.isVisible(e)) continue;
       let col: number[];
       if (e.owner >= 0) {

@@ -2,7 +2,7 @@
 // interpolation snapshots, fog-of-war visibility, selection and commands.
 
 import {
-  BUILDINGS, FP, LockstepRunner, TURN_MS, TICKS_PER_TURN, UNITS,
+  BUILDINGS, FP, LockstepRunner, areFriends, TURN_MS, TICKS_PER_TURN, UNITS,
   type Command, type Entity, type GameEvent, type GameSetup, type GameState, type TurnMsg,
 } from '@mini/shared';
 import type { GameTransport } from './net.ts';
@@ -56,6 +56,7 @@ export class GameSession implements ViewModel {
   onGameOver?: () => void;
   onChat?: (p: number, i: number, emote: boolean) => void;
   private acc = 0;
+  private stallSince = 0;
   private visTick = -1;
   private sightCache = new Map<number, Array<[number, number]>>();
   private pendingEvents: GameEvent[] = [];
@@ -117,20 +118,31 @@ export class GameSession implements ViewModel {
       return;
     }
     this.catchingUp = false;
-    const catchUp = this.kind === 'replay' ? 1 : buffered > 3 ? Math.min(4, buffered / 2) : 1;
-    const tickMs = TICK_MS / (this.speed * catchUp);
+    // Pace: speed up when turns pile up. Online, also keep about one turn in hand to
+    // absorb network jitter by running slightly slower while the buffer is nearly empty.
+    let pace = 1;
+    if (this.kind !== 'replay') {
+      if (buffered > 3) pace = Math.min(4, buffered / 2);
+      else if (this.kind === 'online' && buffered <= 1) pace = 0.9;
+    }
+    const tickMs = TICK_MS / (this.speed * pace);
     this.acc += dtMs;
     let n = 0;
-    this.waiting = false;
+    let stalled = false;
     while (this.acc >= tickMs && n < 40) {
       if (!this.runner.tick()) {
         this.acc = Math.min(this.acc, tickMs);
-        this.waiting = this.kind !== 'replay' && !this.state.over;
+        stalled = true;
         break;
       }
       this.acc -= tickMs;
       n++;
     }
+    // Only show 'waiting' for a real stall, not a turn that is a few ms late.
+    const now = performance.now();
+    if (n > 0) this.stallSince = 0;
+    else if (stalled && !this.stallSince) this.stallSince = now;
+    this.waiting = this.kind !== 'replay' && !this.state.over && this.stallSince > 0 && now - this.stallSince > 600;
     this.alpha = Math.max(0, Math.min(1, this.acc / tickMs));
     if (n > 0) {
       this.computeVis(false);
@@ -192,9 +204,10 @@ export class GameSession implements ViewModel {
     const { w, h } = s.map;
     const vis = this.vis;
     for (let i = 0; i < vis.length; i++) if (vis[i] === 2) vis[i] = 1;
-    const team = this.myPlayer?.team ?? -99;
+    const me = this.me;
     for (const e of s.entities) {
-      if (e.owner < 0 || e.inside || s.players[e.owner].team !== team) continue;
+      // allies share vision
+      if (e.owner < 0 || e.inside || me < 0 || !areFriends(s, e.owner, me)) continue;
       const ud = UNITS[e.kind];
       const bd = BUILDINGS[e.kind];
       const r = ud ? ud.sight : bd ? (e.done ? bd.sight : 2) + (e.size >> 1) : 0;
@@ -217,7 +230,7 @@ export class GameSession implements ViewModel {
   isVisible(e: Entity): boolean {
     if (!this.fogEnabled) return true;
     const i = Math.floor(e.y / FP) * this.state.map.w + Math.floor(e.x / FP);
-    if (e.owner >= 0 && this.myPlayer && this.state.players[e.owner].team === this.myPlayer.team) return true;
+    if (e.owner >= 0 && this.me >= 0 && areFriends(this.state, e.owner, this.me)) return true;
     return UNITS[e.kind] ? this.vis[i] === 2 : this.vis[i] > 0;
   }
 

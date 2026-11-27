@@ -94,6 +94,9 @@ export interface Player {
   alive: boolean;
   castleId: number;
   corner: number;
+  tech: number[]; // research level per TECHS index
+  allies: number; // bitmask of player slots we are allied with (always mutual)
+  offers: number; // bitmask of player slots we offered an alliance to
   stats: PlayerStats;
 }
 
@@ -109,8 +112,10 @@ export type GameEvent =
   | { e: 'built'; id: number; owner: number }
   | { e: 'trained'; id: number; owner: number }
   | { e: 'levelup'; owner: number; level: number }
+  | { e: 'research'; owner: number; tech: string; level: number }
   | { e: 'eliminated'; owner: number }
-  | { e: 'gameover'; team: number };
+  | { e: 'gameover'; team: number }
+  | { e: 'diplomacy'; from: number; to: number; what: 'offer' | 'ally' | 'break' | 'withdraw' };
 
 export interface GameState {
   seed: number;
@@ -124,7 +129,9 @@ export interface GameState {
   players: Player[];
   events: GameEvent[]; // this tick only, not hashed
   over: boolean;
-  winnerTeam: number;
+  winnerTeam: number; // -1 when several teams win together as allies
+  winners: number; // bitmask of winning player slots
+  diplomacy: boolean; // alliances allowed (free-for-all games)
 }
 
 export type Command =
@@ -139,10 +146,13 @@ export type Command =
   | { t: 'cancel'; b: number }
   | { t: 'rally'; b: number; x: number; y: number }
   | { t: 'upgrade'; b: number }
+  | { t: 'research'; b: number; tech: string }
   | { t: 'stop'; ids: number[] }
   | { t: 'board'; ids: number[]; transport: number }
   | { t: 'unload'; transport: number; x: number; y: number }
-  | { t: 'resign' };
+  | { t: 'resign' }
+  | { t: 'ally'; target: number } // offer, or accept an offer
+  | { t: 'unally'; target: number }; // break an alliance or withdraw an offer
 
 /** A command stamped with the player slot by the relay server. */
 export interface PlayerCommand {

@@ -34,11 +34,22 @@ castles), land and sea, workers, soldiers, siege engines and ships, played head 
 | 4. Multiplayer | Room codes, server-timed turns, hash-based desync detection with saved logs, reconnect by fast-forward, quick-chat | ✅ |
 | 5. Boats and siege | Dock, transport boarding and unloading, warships, rams, catapults with splash damage, walls and gates | ✅ |
 | 6. Fun layer | Tutorial, XP and hat cosmetics, synthesized sound, particles, replays (save, load, watch at 1–8x) | ✅ |
-| 7. Playtest and launch | Touch controls verified (phone emulation); automated balance playtest (`scripts/balance.ts`) with bot difficulty curve fixed; Dockerfile plus Fly.io and Render configs; production start command verified with a live 2v2 | 🟡 automated parts done; real-kid playtest and going live need a person |
+| 7. Playtest and launch | Touch controls verified (phone emulation); automated balance playtest (`scripts/balance.ts`) with bot difficulty curve fixed; production run with plain Node (`npm run build && npm start`) verified with a live 2v2 | ✅ automated parts done. Real-kid playtesting and going live are deferred by choice (owner decision, 2026-11-26) |
+
+## Expansion: upgrades, vehicles, ships, flyers, towers, alliances
+
+| Area | Added |
+|---|---|
+| Research | 13 techs: Better Tools, Bigger Baskets, Tough Workers, Masonry, Tower Guards (castle); Sharp Weapons, Strong Bows, Armor, Horse Armor (blacksmith); Siege Craft (workshop); Shipwright (dock); Dragon Fire, Thick Scales (roost) |
+| Vehicles | Ballista (anti-air), War Wagon, Trebuchet, Bombard cannon |
+| Ships | Longship, Fire Ship, Cannon Galleon |
+| Flyers | Griffin Rider, Wyvern, Dragon (Dragon Roost). Fly over water and walls; only ranged attackers, towers and flyers can hit them |
+| Towers | Arrow Tower, Sky Ballista Tower (anti-air), Flame Tower, Cannon Tower (cannot hit flyers) |
+| Alliances | Free-for-all only: offer, accept, break any time. Allies share vision, never fight, and win together. Bots accept unless it would end the game |
 
 ## Verification in place
 
-- `npm test`: determinism lint, plus 32 tests covering math, map symmetry, pathfinding, economy,
+- `npm test`: determinism lint, plus 50 tests covering math, map symmetry, pathfinding, economy,
   combat, boats, command validation, golden hashes, fuzzed replay equality, reconnect
   fast-forward, and a live relay-server integration test (two WebSocket clients)
 - `/determinism.html`: the same golden games run in any browser and are compared to Node's hashes
@@ -60,5 +71,5 @@ Re-run with `npx tsx scripts/balance.ts 6` after changing numbers.
 
 - Playtest with the target age group; tune costs and timings in `packages/shared/src/defs.ts`
   (then run `npm run golden`)
-- Run the cross-browser golden check in Firefox and Safari (Chromium is verified)
-- Hosting: one small Node server (Fly.io, Render or a VPS) serves the client and the relay
+- Cross-browser golden check in Firefox and Safari: skipped for now (Chromium and Node verified); open `/determinism.html` in those browsers any time
+- Going live: when ready, run `npm ci && npm run build && npm start` on any Node host (see README)

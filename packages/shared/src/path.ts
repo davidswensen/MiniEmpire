@@ -18,7 +18,8 @@ function teamOf(s: GameState, owner: number): number {
 }
 
 /** Passability for a mover of the given owner and domain. */
-export function passableFn(s: GameState, owner: number, naval: boolean): Passable {
+export function passableFn(s: GameState, owner: number, naval: boolean, air = false): Passable {
+  if (air) return () => true; // flyers ignore terrain, walls and trees
   const tiles = s.map.tiles;
   const occ = s.occ;
   const team = teamOf(s, owner);

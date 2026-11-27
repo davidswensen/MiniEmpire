@@ -8,6 +8,8 @@ catapults and ships, and knock down the enemy castle, against bots or friends on
 - **Online multiplayer** with 4-letter room codes: 1v1, 2v2, or free-for-all with up to 4 players; bots fill empty slots
 - **Deterministic lockstep networking**: only commands travel over the network
 - **Kid-safe**: no accounts, no personal info, no free-text chat (quick-chat buttons and emotes only), no ads or purchases
+- **Upgrades** (blacksmith, castle, workshop, dock, dragon roost), **siege vehicles** (ram, ballista, war wagon, catapult, trebuchet, bombard), **ships** (transport, longship, warship, fire ship, galleon), **flyers** (griffin rider, wyvern, dragon) and **towers** (arrow, sky ballista, flame, cannon)
+- **Alliances** in free-for-all games: offer, accept, break at any time; allies share vision and can win together
 - Tutorial, cosmetic hats unlocked with XP, replays, sound effects
 
 ## Run it
@@ -34,18 +36,15 @@ Set the `PORT` environment variable to change the port.
 
 ## Deploy
 
-One container serves the client and the relay. Rooms live in memory, so run exactly one instance.
+No Docker needed. On any host with Node 22+ that allows WebSockets (a VPS, a Raspberry Pi, or Render or Railway set to Node):
 
 ```powershell
-docker build -t miniempire .
-docker run -p 8080:8080 miniempire
+npm ci
+npm run build
+npm start
 ```
 
-- **Fly.io:** `fly launch --no-deploy --copy-config --name <your-app>`, then `fly deploy` (see `fly.toml`)
-- **Render:** create a Blueprint from `render.yaml`
-- **Any Node host:** `npm ci && npm run build && npm start`
-
-WebSockets must be allowed through any proxy (path `/ws`). Health check: `/health`.
+One process serves the game and the relay (WebSocket at `/ws`, health check at `/health`). Set `PORT` to change the port. Game rooms live in memory, so run exactly one instance.
 
 ## Checks
 
@@ -54,6 +53,7 @@ npm test          # determinism lint + all tests (sim, bots, replays, live relay
 npm run typecheck
 npm run golden    # regenerate golden hashes after an intentional gameplay change
 npx tsx scripts/balance.ts 6   # automated balance playtest (bot difficulty matrix)
+npx tsx scripts/net-jitter.ts 15 60   # 4 clients on the running relay: smoothness under network jitter
 ```
 
 Open `/determinism.html` in any browser to check that browser reproduces the golden games

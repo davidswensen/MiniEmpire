@@ -4,13 +4,14 @@
 //  - the only inputs are PlayerCommands applied at turn boundaries
 
 import {
-  BUILDINGS, CASTLE_UPGRADES, MAX_POP, PLAYER_COLORS, RESOURCES, START_GOLD, START_WOOD,
+  BUILDINGS, CASTLE_UPGRADES, MAX_POP, TECHS, TECH_INDEX, TECH_PREFIX, techCost, PLAYER_COLORS, RESOURCES, START_GOLD, START_WOOD,
   START_WORKERS, UNITS, UPGRADE_ITEM, type BuildingDef, type Cost, type UnitDef,
 } from './defs.ts';
 import { FP, idiv, ilen, pct, tileCenter, toTile } from './fixed.ts';
 import { cornerForSlot, cornersForMode, generateMap } from './map.ts';
 import { findPath, nearestTile, passableFn, type Passable } from './path.ts';
 import { makeRng } from './rng.ts';
+import { statArmor, statAtk, statCarry, statGatherTicks, statMaxHp, statRange } from './stats.ts';
 import { botThink } from './bot.ts';
 import {
   Order, Tile, type Command, type Entity, type GameSetup, type GameState, type Player, type PlayerCommand,
@@ -54,8 +55,8 @@ function spawnStatic(s: GameState, kind: string, owner: number, tx: number, ty: 
   const bd = BUILDINGS[kind];
   const rd = RESOURCES[kind];
   if (bd) {
-    e.maxHp = bd.hp;
-    e.hp = bd.hp;
+    e.maxHp = statMaxHp(s, owner, kind);
+    e.hp = e.maxHp;
   } else if (rd) {
     e.amount = rd.amount;
     e.hp = 1;
@@ -71,9 +72,8 @@ function spawnUnit(s: GameState, kind: string, owner: number, tileIdx: number): 
   const tx = tileIdx % w;
   const ty = idiv(tileIdx, w);
   const e = newEntity(s.nextId++, kind, owner, tileCenter(tx), tileCenter(ty));
-  const d = UNITS[kind];
-  e.hp = d.hp;
-  e.maxHp = d.hp;
+  e.maxHp = statMaxHp(s, owner, kind);
+  e.hp = e.maxHp;
   addEntity(s, e);
   return e;
 }
@@ -96,6 +96,8 @@ export function createGame(setup: GameSetup): GameState {
     events: [],
     over: false,
     winnerTeam: -1,
+    winners: 0,
+    diplomacy: false,
   };
   setup.players.forEach((ps, i) => {
     const p: Player = {
@@ -105,6 +107,9 @@ export function createGame(setup: GameSetup): GameState {
       wood: START_WOOD, gold: START_GOLD, pop: 0, popCap: 0, level: 1, alive: true, castleId: 0,
       corner: cornerForSlot(setup.mode, i),
       stats: { trained: 0, kills: 0, lost: 0, gathered: 0, built: 0 },
+      tech: TECHS.map(() => 0),
+      allies: 0,
+      offers: 0,
     };
     s.players.push(p);
   });
@@ -128,6 +133,10 @@ export function createGame(setup: GameSetup): GameState {
       if (t >= 0) spawnUnit(s, 'worker', p.slot, t);
     }
   }
+  // alliances only make sense with 3+ sides (free-for-all)
+  const sides: number[] = [];
+  for (const p of s.players) if (!sides.includes(p.team)) sides.push(p.team);
+  s.diplomacy = sides.length >= 3;
   recomputePop(s);
   return s;
 }
@@ -154,7 +163,13 @@ export function teamOf(s: GameState, owner: number): number {
 }
 export function areEnemies(s: GameState, a: number, b: number): boolean {
   if (a < 0 || b < 0) return false;
-  return teamOf(s, a) !== teamOf(s, b);
+  if (teamOf(s, a) === teamOf(s, b)) return false;
+  return (s.players[a].allies & (1 << b)) === 0;
+}
+
+/** Same team or allied (shares vision, never fights). */
+export function areFriends(s: GameState, a: number, b: number): boolean {
+  return a >= 0 && b >= 0 && a < s.players.length && b < s.players.length && !areEnemies(s, a, b);
 }
 
 /** Distance from point to the target's body edge (fixed-point). */
@@ -276,7 +291,8 @@ function findEnemy(s: GameState, e: Entity, tiles: number, ok: (t: Entity) => bo
 // ---------------------------------------------------------------- movement
 
 function domainPass(s: GameState, e: Entity): Passable {
-  return passableFn(s, e.owner, !!UNITS[e.kind]?.naval);
+  const d = UNITS[e.kind];
+  return passableFn(s, e.owner, !!d?.naval, !!d?.air);
 }
 
 function tileOf(s: GameState, x: number, y: number): number {
@@ -301,7 +317,8 @@ function pathTo(s: GameState, e: Entity, goal: number): void {
       return;
     }
   }
-  e.path = findPath(s.map.w, s.map.h, start, g, pass);
+  // flyers go straight there
+  e.path = UNITS[e.kind]?.air ? (g === start ? [] : [g]) : findPath(s.map.w, s.map.h, start, g, pass);
   e.pathIdx = 0;
 }
 
@@ -436,7 +453,16 @@ function canTarget(s: GameState, e: Entity, t: Entity): boolean {
   if (d.buildingsOnly && !targetIsBuilding) return false;
   const tn = UNITS[t.kind]?.naval ?? false;
   // melee land units cannot reach boats; boats cannot melee
-  if (tn && !d.naval && d.range <= FP) return false;
+  if (tn && !d.naval && !d.air && d.range <= FP) return false;
+  // only flyers and ranged attackers (not catapults or cannons) can hit flyers
+  if (UNITS[t.kind]?.air && !d.air && (d.range <= FP || d.noAir)) return false;
+  return true;
+}
+
+/** Can a defensive building shoot this target? */
+function buildingCanTarget(bd: BuildingDef, t: Entity): boolean {
+  if (t.dead || t.inside || t.kind in BUILDINGS) return false;
+  if (UNITS[t.kind]?.air && !bd.antiAir) return false;
   return true;
 }
 
@@ -446,6 +472,7 @@ function damage(s: GameState, attacker: Entity, atk: number, bonus: UnitDef['bon
   let dmg = atk;
   const b = armor ? bonus[armor] : undefined;
   if (b !== undefined) dmg = pct(dmg, b);
+  dmg -= statArmor(s, t.owner, t.kind);
   if (dmg < 1) dmg = 1;
   t.hp -= dmg;
   if (t.hp <= 0) {
@@ -469,6 +496,8 @@ function hit(s: GameState, e: Entity, t: Entity, atk: number, bonus: UnitDef['bo
         for (const id of idx.grid[y * w + x]) {
           const o = s.byId.get(id);
           if (!o || o === t || o.dead || !areEnemies(s, e.owner, o.owner)) continue;
+          // splash stays on one layer: ground blasts do not reach flyers and vice versa
+          if (!!UNITS[o.kind]?.air !== !!UNITS[t.kind]?.air) continue;
           if (ilen(o.x - t.x, o.y - t.y) <= splash) damage(s, e, half, bonus, o);
         }
       }
@@ -619,7 +648,8 @@ function updateUnit(s: GameState, e: Entity, d: UnitDef): void {
         resumeAfterAttack(s, e);
         return;
       }
-      if (dist <= d.range) {
+      const range = statRange(s, e.owner, e.kind);
+      if (dist <= range) {
         if (dist < d.minRange) {
           resumeAfterAttack(s, e);
           e.scanAt = s.tick + 20;
@@ -627,7 +657,7 @@ function updateUnit(s: GameState, e: Entity, d: UnitDef): void {
         }
         stopMoving(e);
         if (e.cooldown === 0) {
-          hit(s, e, t, d.atk, d.bonus, d.range > FP, d.splash);
+          hit(s, e, t, statAtk(s, e.owner, e.kind), d.bonus, d.range > FP, d.splash);
           e.cooldown = d.cooldown;
         }
         return;
@@ -653,7 +683,7 @@ function updateUnit(s: GameState, e: Entity, d: UnitDef): void {
         e.carryRes = res;
         e.carryAmt = 0;
       }
-      if (e.carryAmt >= d.carry) {
+      if (e.carryAmt >= statCarry(s, e.owner, e.kind)) {
         e.order = Order.RETURN;
         e.targetId = 0;
         stopMoving(e);
@@ -662,7 +692,7 @@ function updateUnit(s: GameState, e: Entity, d: UnitDef): void {
       if (distToEdge(e.x, e.y, r) <= REACH) {
         stopMoving(e);
         e.gatherTimer++;
-        if (e.gatherTimer >= d.gatherTicks) {
+        if (e.gatherTimer >= statGatherTicks(s, e.owner, e.kind)) {
           e.gatherTimer = 0;
           e.carryAmt++;
           r.amount--;
@@ -820,7 +850,20 @@ function updateBuilding(s: GameState, b: Entity, d: BuildingDef): void {
   const p = s.players[b.owner];
   if (b.queue.length > 0) {
     const item = b.queue[0];
-    if (item === UPGRADE_ITEM) {
+    if (item.startsWith(TECH_PREFIX)) {
+      const ti = TECH_INDEX[item.slice(TECH_PREFIX.length)];
+      const tech = TECHS[ti];
+      b.queueTime++;
+      if (!tech || b.queueTime >= tech.time) {
+        b.queue.shift();
+        b.queueTime = 0;
+        if (tech && p.tech[ti] < tech.levels) {
+          p.tech[ti]++;
+          refreshMaxHp(s, p.slot);
+          s.events.push({ e: 'research', owner: p.slot, tech: tech.id, level: p.tech[ti] });
+        }
+      }
+    } else if (item === UPGRADE_ITEM) {
       const up = CASTLE_UPGRADES[p.level];
       b.queueTime++;
       if (!up || b.queueTime >= up.time) {
@@ -835,7 +878,7 @@ function updateBuilding(s: GameState, b: Entity, d: BuildingDef): void {
       const ud = UNITS[item];
       if (b.queueTime < ud.trainTime) b.queueTime++;
       if (b.queueTime >= ud.trainTime && p.pop + ud.pop <= p.popCap) {
-        const pass = passableFn(s, b.owner, ud.naval);
+        const pass = passableFn(s, b.owner, ud.naval, ud.air);
         const spot = freeTileNear(s, b, pass, 0);
         const spot2 = spot >= 0 ? spot : freeTileNearAny(s, b, pass);
         if (spot2 >= 0) {
@@ -855,12 +898,25 @@ function updateBuilding(s: GameState, b: Entity, d: BuildingDef): void {
     if (b.cooldown > 0) b.cooldown--;
     if (b.cooldown === 0 && s.tick >= b.scanAt) {
       b.scanAt = s.tick + 4;
-      const t = findEnemy(s, b, idiv(d.range, FP) + 1, (t) => !t.dead && !t.inside && !(t.kind in BUILDINGS));
-      if (t && distToEdge(b.x, b.y, t) <= d.range) {
-        hit(s, b, t, d.atk, {}, true, 0);
+      const range = statRange(s, b.owner, b.kind);
+      const t = findEnemy(s, b, idiv(range, FP) + 1, (t) => buildingCanTarget(d, t));
+      if (t && distToEdge(b.x, b.y, t) <= range) {
+        hit(s, b, t, statAtk(s, b.owner, b.kind), d.bonus, true, d.splash);
         b.cooldown = d.cooldown;
       }
     }
+  }
+}
+
+/** Apply health research to everything a player already owns (keeps the damage taken). */
+function refreshMaxHp(s: GameState, owner: number): void {
+  for (const e of s.entities) {
+    if (e.owner !== owner || e.dead || !(e.kind in UNITS || e.kind in BUILDINGS)) continue;
+    const m = statMaxHp(s, owner, e.kind);
+    if (m === e.maxHp) continue;
+    e.hp += m - e.maxHp;
+    e.maxHp = m;
+    if (e.hp < 1) e.hp = 1;
   }
 }
 
@@ -904,7 +960,7 @@ function separate(s: GameState): void {
           const b = s.byId.get(id);
           if (!b || b.dead || b.inside) continue;
           const bd = UNITS[b.kind];
-          if (!bd || bd.naval !== ad.naval) continue;
+          if (!bd || bd.naval !== ad.naval || bd.air !== ad.air) continue;
           const minD = ad.radius + bd.radius;
           let dx = b.x - a.x;
           let dy = b.y - a.y;
@@ -1014,13 +1070,30 @@ function recomputePop(s: GameState): void {
 
 function checkVictory(s: GameState): void {
   if (s.over) return;
+  const alive = s.players.filter((p) => p.alive);
+  // the game ends when nobody left alive is an enemy of anybody else left alive
+  for (const a of alive) for (const b of alive) if (areEnemies(s, a.slot, b.slot)) return;
   const teams: number[] = [];
-  for (const p of s.players) if (p.alive && !teams.includes(p.team)) teams.push(p.team);
-  if (teams.length <= 1) {
-    s.over = true;
-    s.winnerTeam = teams.length === 1 ? teams[0] : -1;
-    s.events.push({ e: 'gameover', team: s.winnerTeam });
+  for (const p of alive) if (!teams.includes(p.team)) teams.push(p.team);
+  s.over = true;
+  s.winnerTeam = teams.length === 1 ? teams[0] : -1;
+  s.winners = 0;
+  for (const p of s.players) if (p.alive || teams.includes(p.team)) s.winners |= 1 << p.slot;
+  s.events.push({ e: 'gameover', team: s.winnerTeam });
+}
+
+function setAllied(s: GameState, a: number, b: number, on: boolean): void {
+  const pa = s.players[a];
+  const pb = s.players[b];
+  if (on) {
+    pa.allies |= 1 << b;
+    pb.allies |= 1 << a;
+  } else {
+    pa.allies &= ~(1 << b);
+    pb.allies &= ~(1 << a);
   }
+  pa.offers &= ~(1 << b);
+  pb.offers &= ~(1 << a);
 }
 
 // ---------------------------------------------------------------- commands
@@ -1131,7 +1204,7 @@ export function applyCommand(s: GameState, pc: PlayerCommand): void {
               continue;
             }
           }
-          if (!ud.naval && UNITS[target.kind]?.cargo && target.owner === p) {
+          if (!ud.naval && !ud.air && UNITS[target.kind]?.cargo && target.owner === p) {
             u.order = Order.BOARD;
             u.targetId = target.id;
             stopMoving(u);
@@ -1180,10 +1253,10 @@ export function applyCommand(s: GameState, pc: PlayerCommand): void {
       const b = spawnStatic(s, kind, p, tx, ty, bd.size);
       b.done = false;
       b.progress = 0;
-      b.hp = Math.max(1, idiv(bd.hp, 10));
+      b.hp = Math.max(1, idiv(b.maxHp, 10));
       // nudge any units standing on the footprint
       for (const e of s.entities) {
-        if (e.size > 0 || e.inside || e.dead || UNITS[e.kind]?.naval) continue;
+        if (e.size > 0 || e.inside || e.dead || UNITS[e.kind]?.naval || UNITS[e.kind]?.air) continue;
         const ex = toTile(e.x);
         const ey = toTile(e.y);
         if (ex >= tx && ex < tx + bd.size && ey >= ty && ey < ty + bd.size) {
@@ -1218,7 +1291,25 @@ export function applyCommand(s: GameState, pc: PlayerCommand): void {
       if (item === UPGRADE_ITEM) {
         const up = CASTLE_UPGRADES[player.level];
         if (up) refund(player, up.cost);
+      } else if (item.startsWith(TECH_PREFIX)) {
+        const ti = TECH_INDEX[item.slice(TECH_PREFIX.length)];
+        if (TECHS[ti]) refund(player, techCost(TECHS[ti], player.tech[ti] + 1));
       } else if (UNITS[item]) refund(player, UNITS[item].cost);
+      return;
+    }
+    case 'research': {
+      const b = ownBuilding(s, p, c.b);
+      const ti = TECH_INDEX[String(c.tech)];
+      const tech = ti === undefined ? undefined : TECHS[ti];
+      if (!b || !b.done || !tech || tech.at !== b.kind || b.queue.length >= 5) return;
+      if (player.level < tech.castleLevel || player.tech[ti] >= tech.levels) return;
+      const item = TECH_PREFIX + tech.id;
+      // one research of each kind at a time, across all buildings
+      for (const e of s.entities) if (e.owner === p && e.queue.includes(item)) return;
+      const cost = techCost(tech, player.tech[ti] + 1);
+      if (!canAfford(player, cost)) return;
+      pay(player, cost);
+      b.queue.push(item);
       return;
     }
     case 'upgrade': {
@@ -1245,7 +1336,7 @@ export function applyCommand(s: GameState, pc: PlayerCommand): void {
       const t = s.byId.get(int(c.transport));
       if (!t || t.owner !== p || !UNITS[t.kind]?.cargo) return;
       for (const u of ownUnits(s, p, c.ids)) {
-        if (UNITS[u.kind].naval) continue;
+        if (UNITS[u.kind].naval || UNITS[u.kind].air) continue;
         u.order = Order.BOARD;
         u.targetId = t.id;
         stopMoving(u);
@@ -1260,6 +1351,31 @@ export function applyCommand(s: GameState, pc: PlayerCommand): void {
     }
     case 'resign': {
       eliminate(s, p);
+      return;
+    }
+    case 'ally': {
+      const q = int(c.target);
+      if (!s.diplomacy || q === p || q < 0 || q >= s.players.length || !s.players[q].alive) return;
+      if (player.team === s.players[q].team || (player.allies & (1 << q))) return;
+      if (s.players[q].offers & (1 << p)) {
+        setAllied(s, p, q, true);
+        s.events.push({ e: 'diplomacy', from: p, to: q, what: 'ally' });
+      } else if (!(player.offers & (1 << q))) {
+        player.offers |= 1 << q;
+        s.events.push({ e: 'diplomacy', from: p, to: q, what: 'offer' });
+      }
+      return;
+    }
+    case 'unally': {
+      const q = int(c.target);
+      if (q === p || q < 0 || q >= s.players.length) return;
+      if (player.allies & (1 << q)) {
+        setAllied(s, p, q, false);
+        s.events.push({ e: 'diplomacy', from: p, to: q, what: 'break' });
+      } else if (player.offers & (1 << q)) {
+        player.offers &= ~(1 << q);
+        s.events.push({ e: 'diplomacy', from: p, to: q, what: 'withdraw' });
+      }
       return;
     }
   }
