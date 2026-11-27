@@ -4,6 +4,7 @@
 //   npx tsx scripts/net-jitter.ts [seconds] [maxJitterMs]
 import WebSocket from 'ws';
 import type { ServerMsg, TurnMsg } from '@mini/shared';
+import { simVersion } from './sim-version.mjs';
 import { GameSession } from '../packages/client/src/game.ts';
 import type { GameTransport } from '../packages/client/src/net.ts';
 
@@ -39,7 +40,7 @@ function client(name: string) {
 
 const cs = ['A', 'B', 'C', 'D'].map(client);
 await Promise.all(cs.map((c) => c.open));
-cs.forEach((c) => c.send({ type: 'hello', name: c.name, hat: 0 }));
+cs.forEach((c) => c.send({ type: 'hello', name: c.name, hat: 0, version: simVersion() }));
 await Promise.all(cs.map((c) => c.wait('welcome')));
 cs[0].send({ type: 'create', mode: 'ffa4', isPublic: false });
 const code = (await cs[0].wait('room')).room.code;

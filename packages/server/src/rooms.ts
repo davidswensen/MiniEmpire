@@ -190,8 +190,9 @@ export class Room {
 
   private saveDesync(t: number, hashes: Record<number, number>): void {
     try {
-      mkdirSync('desyncs', { recursive: true });
-      const file = `desyncs/${this.code}-${t}-${Date.now()}.json`;
+      const dir = process.env.DESYNC_DIR ?? 'desyncs';
+      mkdirSync(dir, { recursive: true });
+      const file = `${dir}/${this.code}-${t}-${Date.now()}.json`;
       writeFileSync(file, JSON.stringify({ setup: this.setup, turns: this.turns, hashes, at: t }));
       console.warn(`[room ${this.code}] saved ${file} (replay it with: npm test -- desync)`);
     } catch (err) {

@@ -519,6 +519,10 @@ net.on((m: ServerMsg) => {
     case 'error':
       onlineError = m.msg;
       sfx('error');
+      if (m.outdated && running) {
+        setScreen(`<div class="card"><h2>🔄 New version</h2><p>${esc(m.msg)}</p><div class="row"><button class="btn" data-go="menu">🏠 Menu</button></div></div>`, true);
+        break;
+      }
       if (lobbyRoom) showLobby();
       else if (!running) showOnline();
       break;

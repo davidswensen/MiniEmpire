@@ -7,6 +7,10 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import type { ClientMsg } from '@mini/shared';
 import { Lobby, Session } from './rooms.ts';
+import { simVersion } from '../../../scripts/sim-version.mjs';
+
+/** Clients must run exactly this simulation, or they would desync. */
+const SIM_VERSION = simVersion();
 
 const PORT = Number(process.env.PORT ?? 8080);
 const here = fileURLToPath(new URL('.', import.meta.url));
@@ -44,7 +48,10 @@ const http = createServer((req, res) => {
     return;
   }
   if (!existsSync(file) || statSync(file).isDirectory()) file = join(STATIC_DIR, 'index.html');
-  res.writeHead(200, { 'content-type': TYPES[extname(file)] ?? 'application/octet-stream' });
+  // pages must always be re-checked so nobody plays an outdated build;
+  // hashed assets never change and can be cached forever
+  const cache = file.includes(`${normalize('/assets/')}`) ? 'public, max-age=31536000, immutable' : 'no-cache';
+  res.writeHead(200, { 'content-type': TYPES[extname(file)] ?? 'application/octet-stream', 'cache-control': cache });
   res.end(readFileSync(file));
 });
 
@@ -62,6 +69,12 @@ wss.on('connection', (ws) => {
     if (!msg || typeof msg !== 'object') return;
     if (!sess) {
       if (msg.type !== 'hello') return;
+      if (msg.version !== SIM_VERSION) {
+        // an outdated page (or an outdated server): playing together would desync
+        ws.send(JSON.stringify({ type: 'error', outdated: true, msg: 'This page is out of date. Reloading the newest version…' }));
+        ws.close(4001, 'outdated');
+        return;
+      }
       const existing = msg.token ? lobby.sessions.get(String(msg.token)) : undefined;
       if (existing) {
         existing.ws?.close();
@@ -94,5 +107,5 @@ wss.on('connection', (ws) => {
 setInterval(() => lobby.sweep(), 10_000);
 
 http.listen(PORT, () => {
-  console.log(`MiniEmpire server on http://localhost:${PORT}  (WebSocket at /ws)`);
+  console.log(`MiniEmpire server on http://localhost:${PORT}  (WebSocket at /ws)  sim ${SIM_VERSION}`);
 });

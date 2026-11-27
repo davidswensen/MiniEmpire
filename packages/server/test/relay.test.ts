@@ -3,6 +3,12 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 import type { ServerMsg } from '@mini/shared';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { simVersion } from '../../../scripts/sim-version.mjs';
+
+const VERSION = simVersion();
 
 const PORT = 18000 + Math.floor(Math.random() * 1000);
 let proc: ChildProcess;
@@ -18,7 +24,10 @@ class Client {
     return new Promise((r) => this.ws.once('open', () => r()));
   }
   send(m: unknown): void {
-    this.ws.send(JSON.stringify(m));
+    const msg = m as { type?: string; version?: string };
+    // every hello carries the simulation version, like the real client
+    if (msg.type === 'hello' && !('version' in msg)) msg.version = VERSION;
+    this.ws.send(JSON.stringify(msg));
   }
   async wait<T extends ServerMsg['type']>(type: T, pred: (m: Extract<ServerMsg, { type: T }>) => boolean = () => true, ms = 5000): Promise<Extract<ServerMsg, { type: T }>> {
     const t0 = Date.now();
@@ -32,7 +41,9 @@ class Client {
 }
 
 beforeAll(async () => {
-  proc = spawn(process.execPath, ['--import', 'tsx', 'packages/server/src/index.ts'], { env: { ...process.env, PORT: String(PORT) }, stdio: 'pipe' });
+  // desync logs from the deliberate mismatch below go to a temp folder, not the repo
+  const desyncDir = mkdtempSync(join(tmpdir(), 'mini-desync-'));
+  proc = spawn(process.execPath, ['--import', 'tsx', 'packages/server/src/index.ts'], { env: { ...process.env, PORT: String(PORT), DESYNC_DIR: desyncDir }, stdio: 'pipe' });
   await new Promise<void>((resolve, reject) => {
     const to = setTimeout(() => reject(new Error('server did not start')), 20000);
     proc.stdout?.on('data', (d) => {
@@ -164,6 +175,27 @@ describe('relay server', () => {
     expect(times.length).toBeGreaterThanOrEqual(28);
     expect(avg).toBeGreaterThan(95);
     expect(avg).toBeLessThan(104);
+  });
+
+  it('turns away a client running a different game version (would desync)', async () => {
+    const old = new Client();
+    await old.open();
+    const closed = new Promise<number>((r) => old.ws.once('close', (code) => r(code)));
+    old.send({ type: 'hello', name: 'Old', hat: 0, version: 'outdated123' });
+    const err = await old.wait('error');
+    expect(err.outdated).toBe(true);
+    expect(await closed).toBe(4001);
+    expect(old.msgs.some((m) => m.type === 'welcome')).toBe(false);
+
+    const none = new Client(); // very old pages send no version at all
+    await none.open();
+    none.ws.send(JSON.stringify({ type: 'hello', name: 'Ancient', hat: 0 }));
+    expect((await none.wait('error')).outdated).toBe(true);
+  });
+
+  it('serves pages uncached so players always get the current version', async () => {
+    const res = await fetch(`http://localhost:${PORT}/`);
+    if (res.headers.get('content-type')?.includes('text/html')) expect(res.headers.get('cache-control')).toBe('no-cache');
   });
 
   it('serves a health check', async () => {

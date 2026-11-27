@@ -29,7 +29,7 @@ export interface RoomInfo {
 }
 
 export type ClientMsg =
-  | { type: 'hello'; name: string; hat: number; token?: string }
+  | { type: 'hello'; name: string; hat: number; token?: string; version?: string }
   | { type: 'create'; mode: GameMode; isPublic: boolean }
   | { type: 'join'; code: string }
   | { type: 'quick' }
@@ -46,7 +46,7 @@ export type ServerMsg =
   | { type: 'welcome'; token: string; rejoin?: boolean }
   | { type: 'room'; room: RoomInfo; you: number }
   | { type: 'left' }
-  | { type: 'error'; msg: string }
+  | { type: 'error'; msg: string; outdated?: boolean }
   | { type: 'start'; setup: GameSetup; you: number; code: string }
   | { type: 'turn'; turn: TurnMsg }
   | { type: 'history'; setup: GameSetup; you: number; code: string; turns: TurnMsg[] }

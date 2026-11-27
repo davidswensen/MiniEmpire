@@ -3,6 +3,33 @@
 
 import { TURN_MS, type ClientMsg, type Command, type ServerMsg, type TurnMsg } from '@mini/shared';
 import { loadProfile } from './profile.ts';
+import { SIM_VERSION } from 'virtual:sim-version';
+
+const RELOAD_KEY = 'miniempire.versionReloadAt';
+
+/**
+ * The server runs a different version of the game. Get the newest page once;
+ * if we already tried a moment ago, the server itself is outdated, so say so.
+ */
+function handleOutdated(msg: string): boolean {
+  let last = 0;
+  try {
+    last = Number(sessionStorage.getItem(RELOAD_KEY) ?? 0);
+  } catch {
+    /* ignore */
+  }
+  if (Date.now() - last > 20_000) {
+    try {
+      sessionStorage.setItem(RELOAD_KEY, String(Date.now()));
+    } catch {
+      /* ignore */
+    }
+    console.info(msg);
+    location.reload();
+    return true;
+  }
+  return false;
+}
 
 type Listener = (msg: ServerMsg) => void;
 
@@ -53,7 +80,7 @@ export class Net {
     ws.onopen = () => {
       this.retry = 0;
       const p = loadProfile();
-      ws.send(JSON.stringify({ type: 'hello', name: p.name, hat: p.hat, token: getToken() } satisfies ClientMsg));
+      ws.send(JSON.stringify({ type: 'hello', name: p.name, hat: p.hat, token: getToken(), version: SIM_VERSION } satisfies ClientMsg));
     };
     ws.onmessage = (ev) => {
       let msg: ServerMsg;
@@ -71,13 +98,19 @@ export class Net {
         for (const m of queued) this.send(m);
       }
       if (msg.type === 'pong') this.rtt = performance.now() - msg.at;
+      if (msg.type === 'error' && msg.outdated) {
+        this.wantOpen = false;
+        if (handleOutdated(msg.msg)) return;
+        msg = { type: 'error', outdated: true, msg: 'The game server is running a different version of MiniEmpire. Ask whoever runs it to restart it (npm run build, then npm start), then refresh this page.' };
+      }
       for (const l of [...this.listeners]) l(msg);
     };
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
       const was = this.connected;
       this.connected = false;
       this.ws = null;
       if (was) this.onStatus?.(false);
+      if (ev.code === 4001) this.wantOpen = false; // version mismatch: retrying cannot help
       if (this.wantOpen) this.scheduleRetry();
     };
     ws.onerror = () => ws.close();
@@ -105,7 +138,7 @@ export class Net {
   refreshHello(): void {
     if (this.ws && this.connected) {
       const p = loadProfile();
-      this.ws.send(JSON.stringify({ type: 'hello', name: p.name, hat: p.hat, token: getToken() }));
+      this.ws.send(JSON.stringify({ type: 'hello', name: p.name, hat: p.hat, token: getToken(), version: SIM_VERSION }));
     }
   }
 }
