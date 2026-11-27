@@ -3,8 +3,8 @@
 import type { GameMode } from './types.ts';
 
 export const GOLDEN: Array<{ seed: number; mode: GameMode; turns: number; level: number; hash: number }> = [
-  { seed: 1, mode: '1v1', turns: 2400, level: 3, hash: 0xe10ef19d },
-  { seed: 99, mode: '1v1', turns: 1200, level: 1, hash: 0x355283da },
-  { seed: 7, mode: '2v2', turns: 1500, level: 2, hash: 0x473e0670 },
-  { seed: 42, mode: 'ffa4', turns: 1000, level: 3, hash: 0xdf323b6c },
+  { seed: 1, mode: '1v1', turns: 2400, level: 3, hash: 0x15fcc9f3 },
+  { seed: 99, mode: '1v1', turns: 1200, level: 1, hash: 0x5e852045 },
+  { seed: 7, mode: '2v2', turns: 1500, level: 2, hash: 0x51fae27c },
+  { seed: 42, mode: 'ffa4', turns: 1000, level: 3, hash: 0xc680824c },
 ];

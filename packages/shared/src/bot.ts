@@ -16,6 +16,9 @@ interface BotParams {
   maxLevel: number;
   towers: number;
   army: boolean;
+  armyCap: number; // most soldiers this bot keeps at once
+  trainEvery: number; // train at most once every N thinks (1 = every think)
+  minWave: number; // later waves wait for at least this many idle soldiers
 }
 
 const NEVER = 1 << 30;
@@ -24,10 +27,12 @@ const MIN = 20 * 60;
 export const BOT_LEVELS = ['Sleepy (tutorial)', 'Easy', 'Normal', 'Hard'];
 
 const PARAMS: BotParams[] = [
-  { think: 40, maxWorkers: 6, firstAttack: NEVER, wave: 0, grow: 0, maxLevel: 1, towers: 0, army: false },
-  { think: 30, maxWorkers: 10, firstAttack: 7 * MIN, wave: 6, grow: 2, maxLevel: 2, towers: 0, army: true },
-  { think: 20, maxWorkers: 15, firstAttack: 5 * MIN, wave: 8, grow: 3, maxLevel: 2, towers: 1, army: true },
-  { think: 12, maxWorkers: 20, firstAttack: 4 * MIN, wave: 10, grow: 4, maxLevel: 3, towers: 2, army: true },
+  // Sleepy: tutorial punching bag. Easy: small, slow army, no knights. Normal: steady.
+  // Hard: big economy, full tech, large waves.
+  { think: 40, maxWorkers: 6, firstAttack: NEVER, wave: 0, grow: 0, maxLevel: 1, towers: 0, army: false, armyCap: 0, trainEvery: 1, minWave: 0 },
+  { think: 40, maxWorkers: 8, firstAttack: 9 * MIN, wave: 5, grow: 1, maxLevel: 1, towers: 0, army: true, armyCap: 8, trainEvery: 3, minWave: 4 },
+  { think: 24, maxWorkers: 14, firstAttack: 6 * MIN, wave: 8, grow: 2, maxLevel: 2, towers: 1, army: true, armyCap: 22, trainEvery: 1, minWave: 8 },
+  { think: 12, maxWorkers: 20, firstAttack: 5 * MIN, wave: 12, grow: 3, maxLevel: 3, towers: 1, army: true, armyCap: 60, trainEvery: 1, minWave: 16 },
 ];
 
 function afford(p: Player, c: Cost, reserveW = 0, reserveG = 0): boolean {
@@ -180,13 +185,21 @@ export function botThink(s: GameState, p: Player): void {
 
   // 7. train army (keep a little in reserve for houses)
   const reserveW = p.popCap - p.pop <= 2 ? 40 : 0;
+  let armyRoom = prm.armyCap - army.length;
+  const trainTurn = idiv(s.tick, prm.think) % prm.trainEvery === 0;
   for (const kind of ['barracks', 'stable', 'workshop']) {
     for (const b of blds[kind] ?? []) {
-      if (!b.done || b.queue.length >= 2) continue;
-      const options = BUILDINGS[kind].trains.filter((u) => UNITS[u].level <= p.level);
+      if (!b.done || b.queue.length >= 2 || armyRoom <= b.queue.length || !trainTurn) continue;
+      // at most two siege engines of each kind: they cannot fight soldiers
+      const options = BUILDINGS[kind].trains.filter((u) => UNITS[u].level <= p.level && (UNITS[u].armor !== 'siege' || army.filter((a) => a.kind === u).length < 2));
       if (options.length === 0) continue;
       const pick = options[randInt(s.rng, options.length)];
-      if (afford(p, UNITS[pick].cost, reserveW + saveW, saveG)) botCommand(s, p.slot, { t: 'train', b: b.id, kind: pick });
+      // never starve the army while saving for an upgrade
+      const save = army.length >= 6;
+      if (afford(p, UNITS[pick].cost, reserveW + (save ? saveW : 0), save ? saveG : 0)) {
+        botCommand(s, p.slot, { t: 'train', b: b.id, kind: pick });
+        armyRoom--;
+      }
     }
   }
 
@@ -211,8 +224,8 @@ export function botThink(s: GameState, p: Player): void {
   if (mem.waveSize === 0) mem.waveSize = prm.wave;
   const idleArmy = army.filter((u) => u.order === Order.IDLE);
   // later waves: launch when enough troops wait at home, or every 75s with a decent group
-  const waveNeed = Math.min(idiv(mem.waveSize, 2) + 1, 12);
-  const overdue = s.tick - mem.lastAttackTick > 75 * 20 && idleArmy.length >= 5;
+  const waveNeed = prm.minWave;
+  const overdue = s.tick - mem.lastAttackTick > 120 * 20 && idleArmy.length >= idiv(prm.minWave, 2) + 2;
   const ready = mem.waves === 0 ? army.length >= mem.waveSize : idleArmy.length >= waveNeed || overdue;
   if (s.tick >= prm.firstAttack && ready) {
     let target: Entity | null = null;

@@ -32,12 +32,28 @@ npm start
 Then open http://localhost:8080. The relay serves the built client and the WebSocket at `/ws`.
 Set the `PORT` environment variable to change the port.
 
+## Deploy
+
+One container serves the client and the relay. Rooms live in memory, so run exactly one instance.
+
+```powershell
+docker build -t miniempire .
+docker run -p 8080:8080 miniempire
+```
+
+- **Fly.io:** `fly launch --no-deploy --copy-config --name <your-app>`, then `fly deploy` (see `fly.toml`)
+- **Render:** create a Blueprint from `render.yaml`
+- **Any Node host:** `npm ci && npm run build && npm start`
+
+WebSockets must be allowed through any proxy (path `/ws`). Health check: `/health`.
+
 ## Checks
 
 ```powershell
 npm test          # determinism lint + all tests (sim, bots, replays, live relay server)
 npm run typecheck
 npm run golden    # regenerate golden hashes after an intentional gameplay change
+npx tsx scripts/balance.ts 6   # automated balance playtest (bot difficulty matrix)
 ```
 
 Open `/determinism.html` in any browser to check that browser reproduces the golden games

@@ -34,7 +34,7 @@ castles), land and sea, workers, soldiers, siege engines and ships, played head 
 | 4. Multiplayer | Room codes, server-timed turns, hash-based desync detection with saved logs, reconnect by fast-forward, quick-chat | ✅ |
 | 5. Boats and siege | Dock, transport boarding and unloading, warships, rams, catapults with splash damage, walls and gates | ✅ |
 | 6. Fun layer | Tutorial, XP and hat cosmetics, synthesized sound, particles, replays (save, load, watch at 1–8x) | ✅ |
-| 7. Playtest and launch | Balance with real kids, deploy (`npm run build && npm start` on any Node host) | ⏳ needs real playtesting |
+| 7. Playtest and launch | Touch controls verified (phone emulation); automated balance playtest (`scripts/balance.ts`) with bot difficulty curve fixed; Dockerfile plus Fly.io and Render configs; production start command verified with a live 2v2 | 🟡 automated parts done; real-kid playtest and going live need a person |
 
 ## Verification in place
 
@@ -42,6 +42,19 @@ castles), land and sea, workers, soldiers, siege engines and ships, played head 
   combat, boats, command validation, golden hashes, fuzzed replay equality, reconnect
   fast-forward, and a live relay-server integration test (two WebSocket clients)
 - `/determinism.html`: the same golden games run in any browser and are compared to Node's hashes
+
+## Balance playtest (automated, 6 seeds per row)
+
+| Match-up | Result |
+|---|---|
+| Hard vs Normal | Hard wins 6/6 (about 15 min) |
+| Hard vs Easy | Hard wins 6/6 (about 8 min) |
+| Normal vs Easy | Normal wins 6/6 (about 8 min) |
+| Scripted beginner vs Sleepy (tutorial) | beginner wins 6/6 (about 4.5 min) |
+| Scripted beginner vs Easy | beginner wins 4, loses 1, 1 unfinished |
+| Scripted beginner vs Normal | beginner loses 6/6 |
+
+Re-run with `npx tsx scripts/balance.ts 6` after changing numbers.
 
 ## Next ideas
 

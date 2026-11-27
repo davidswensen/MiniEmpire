@@ -602,6 +602,18 @@ function updateUnit(s: GameState, e: Entity, d: UnitDef): void {
         resumeAfterAttack(s, e);
         return;
       }
+      // Marching on a building? Fight back against enemy soldiers close by first,
+      // then carry on to the building (what players expect).
+      if (t.kind in BUILDINGS && s.tick >= e.scanAt && e.kind !== 'worker') {
+        e.scanAt = s.tick + 8;
+        const foe = findEnemy(s, e, 3, (o) => !(o.kind in BUILDINGS) && o.kind !== 'worker' && canTarget(s, e, o));
+        if (foe) {
+          orderAttack(e, foe, true);
+          e.amX = t.x;
+          e.amY = t.y;
+          return;
+        }
+      }
       const dist = distToEdge(e.x, e.y, t);
       if (e.autoTarget && dist > (d.sight + 4) * FP) {
         resumeAfterAttack(s, e);
