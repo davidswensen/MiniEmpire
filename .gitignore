@@ -1,0 +1,5 @@
+node_modules/
+dist/
+desyncs/
+*.log
+.DS_Store

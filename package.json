@@ -1,0 +1,27 @@
+{
+  "name": "miniempire",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/shared",
+    "packages/server",
+    "packages/client"
+  ],
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "npm run build -w @mini/client",
+    "start": "npm run start -w @mini/server",
+    "lint": "node scripts/check-determinism.mjs",
+    "typecheck": "tsc -p packages/shared && tsc -p packages/server && tsc -p packages/client",
+    "test": "node scripts/check-determinism.mjs && vitest run",
+    "golden": "tsx scripts/golden.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.11",
+    "@types/ws": "^8.18.2",
+    "tsx": "^4.23.15",
+    "typescript": "~5.9.3",
+    "vitest": "^5.1.2",
+    "ws": "^8.23.0"
+  }
+}

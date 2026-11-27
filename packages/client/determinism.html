@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Determinism Check</title>
+    <style>
+      :root { color-scheme: light dark; --bg: #f8fafc; --fg: #0f172a; --ok: #15803d; --bad: #b91c1c; }
+      @media (prefers-color-scheme: dark) { :root { --bg: #0f172a; --fg: #f8fafc; --ok: #4ade80; --bad: #f87171; } }
+      body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--fg); padding: 16px; max-width: 760px; margin: auto; }
+      table { border-collapse: collapse; width: 100%; } td, th { padding: 6px; border-bottom: 1px solid #8884; text-align: left; font-family: ui-monospace, monospace; }
+      .ok { color: var(--ok); font-weight: 700; } .bad { color: var(--bad); font-weight: 700; }
+    </style>
+  </head>
+  <body>
+    <h1>MiniEmpire determinism check</h1>
+    <p>Runs bot-only games in this browser and compares the final state hashes with the golden values produced by Node. If every row matches, this browser simulates the game exactly like the server tests do.</p>
+    <p id="status">Running…</p>
+    <table id="out"><tr><th>Seed</th><th>Mode</th><th>Turns</th><th>Expected</th><th>This browser</th><th></th></tr></table>
+    <script type="module" src="/src/determinism.ts"></script>
+  </body>
+</html>
